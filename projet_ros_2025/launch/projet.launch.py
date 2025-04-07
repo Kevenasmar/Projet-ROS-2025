@@ -25,16 +25,20 @@ def generate_launch_description():
         Node(
             package='mybot_teleop',
             executable='turtlebot_teleop_node',
+            parameters = [{
+                'linear_scale':2.,
+                'angular_scale':2.
+            }],
             name='turtlebot_teleop_node',
             output='screen'
         ),
 
         # Node for line following
-        Node(
-            package='Projety-ROS-2025',
-            executable='line_following',
-            name='line_following_node',
-            output='screen',
-            parameters=[{'roundabout_direction': 'left'}]  # tu peux changer par 'right'
-        ),
+        # Node(
+        #     package='projet_ros_2025',
+        #     executable='line_following',
+        #     name='line_following_node',
+        #     output='screen',
+        #     parameters=[{'roundabout_direction': 'left'}]  # tu peux changer par 'right'
+        # ),
     ])
