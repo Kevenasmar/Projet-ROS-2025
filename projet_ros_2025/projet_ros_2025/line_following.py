@@ -27,11 +27,11 @@ class ImageSubscriber(Node):
                 return cx
             return None
     
-    def get_closest_red_y(self, mask_red):
+    def get_closest_y(self, mask):
         """
         Returns the largest Y value (closest red pixel to the bottom).
         """
-        coords = cv2.findNonZero(mask_red)
+        coords = cv2.findNonZero(mask)
         if coords is not None:
             bottommost = max(coords, key=lambda pt: pt[0][1])
             return bottommost[0][1]
@@ -84,7 +84,7 @@ class ImageSubscriber(Node):
             # Both lines visible → standard midpoint logic
             mid_x = (green_cx + red_cx) // 2
             error = mid_x - image_center
-            msg.linear.x = 0.05
+            msg.linear.x = 0.1
             msg.angular.z = -Kp * error
 
             cv2.circle(masked_frame, (green_cx, 100), 5, (0, 255, 0), -1)
@@ -93,34 +93,45 @@ class ImageSubscriber(Node):
 
         elif red_cx is not None:
             # Only red visible → go straight if far, turn if close
-            closest_red_y = self.get_closest_red_y(mask_red)
+            closest_red_y = self.get_closest_y(mask_red)
             self.get_logger().info(f"Closest red Y: {closest_red_y}")
 
             if closest_red_y is not None and closest_red_y < cropped_frame.shape[0] - 40:
                 # Red is far away → go straight
-                msg.linear.x = 0.05
+                msg.linear.x = 0.1
                 msg.angular.z = 0.0
                 self.get_logger().info("Red line far → going straight.")
             else:
                 # Red is close → turn in place
                 error = red_cx - image_center
-                msg.angular.z = 0.05
+                msg.angular.z = 0.6
                 msg.linear.x = 0.0
                 self.get_logger().info("Red line close → turning.")
 
             cv2.circle(masked_frame, (red_cx, 100), 5, (0, 0, 255), -1)
 
         elif green_cx is not None:
-            # Only green → adaptive behavior
-            error = green_cx - image_center
-            msg.angular.z = -0.05
-            msg.linear.x = 0.
+            # Only green visible → go straight if far, turn if close
+            closest_green_y = self.get_closest_y(mask_green)
+            self.get_logger().info(f"Closest green Y: {closest_green_y}")
+
+            if closest_green_y is not None and closest_green_y < cropped_frame.shape[0] - 80:
+                # Red is far away → go straight
+                msg.linear.x = 0.1
+                msg.angular.z = 0.0
+                self.get_logger().info("Green line far → going straight.")
+            else:
+                # Green is close → turn in place
+                error = green_cx - image_center
+                msg.angular.z = -0.6
+                msg.linear.x = 0.
+                
             cv2.circle(masked_frame, (green_cx, 100), 5, (0, 255, 0), -1)
 
         else:
             # No lines → stop
-            msg.linear.x = 0.0
-            msg.angular.z = 0.0
+            msg.linear.x = 0.005
+            msg.angular.z = 0.005
             self.get_logger().warn("No lines detected. Robot stopping.")
 
         # Publish and show
