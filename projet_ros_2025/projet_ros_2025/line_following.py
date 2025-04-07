@@ -75,38 +75,23 @@ class ImageSubscriber(Node):
         if M_red["m00"] > 0:
             red_cx = int(M_red["m10"] / M_red["m00"])
 
-<<<<<<< HEAD
-        if green_cx is not None or red_cx is not None:
-            
-            if green_cx is not None and red_cx is not None:
-                mid_x = int((green_cx + red_cx) / 2)
-            else:
-                mid_x = int(width/2)
-=======
         if green_cx is not None and red_cx is not None:
             mid_x = int((green_cx + red_cx) / 2)
->>>>>>> d83f875338731d782742897f5799dda929fe464a
 
             # Draw visual markers
             cv2.circle(masked_frame, (green_cx, 100), 5, (0, 255, 0), -1)
             cv2.circle(masked_frame, (red_cx, 100), 5, (0, 0, 255), -1)
             cv2.circle(masked_frame, (mid_x, 100), 5, (255, 0, 0), -1)
 
-<<<<<<< HEAD
-            # You can now use mid_x to adjust steering
-            # For example:
-            #error = mid_x - (cropped_frame.shape[1] // 2)
-            # Use this error in your control logic (e.g., PID controller)
-            
-=======
-            # --- Control ---
+        # You can now use mid_x to adjust steering    
+        # --- Control ---
             image_center = cropped_frame.shape[1] // 2
             error = mid_x - image_center
 
             # Create and publish Twist message
             msg = Twist()
-            msg.linear.x = 0.1  # Constant forward speed
-            msg.angular.z = -0.002 * error  # Proportional control for turning (tune gain!)
+            msg.linear.x = .5  # Constant forward speed
+            msg.angular.z = -0.02 * error  # Proportional control for turning (tune gain!)
 
             self.publisher.publish(msg)
 
@@ -116,8 +101,7 @@ class ImageSubscriber(Node):
             msg.linear.x = 0.0
             msg.angular.z = 0.0
             self.publisher.publish(msg)
->>>>>>> d83f875338731d782742897f5799dda929fe464a
-
+            
         cv2.imshow("camera", masked_frame)
         cv2.waitKey(1)
 
