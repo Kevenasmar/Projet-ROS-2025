@@ -1,6 +1,8 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
-package_name = 'Projet-ROS-2025'
+package_name = 'projet_ros_2025'
 
 setup(
     name=package_name,
@@ -20,6 +22,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'line_following = projet_ros_2025.line_following:main'
         ],
     },
 )
