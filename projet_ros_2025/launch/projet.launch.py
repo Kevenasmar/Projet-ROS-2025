@@ -27,7 +27,7 @@ def generate_launch_description():
             executable='turtlebot_teleop_node',
             parameters = [{
                 'linear_scale':2.,
-                'angular_scale':2.
+                'angular_scale':2.,
             }],
             name='turtlebot_teleop_node',
             output='screen'
