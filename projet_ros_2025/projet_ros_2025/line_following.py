@@ -86,7 +86,11 @@ class ImageSubscriber(Node):
             red_cx = int(M_red["m10"] / M_red["m00"])        # Red line center x
 
         if green_cx is not None or red_cx is not None:
-            mid_x = int((green_cx + red_cx) / 2)
+            
+            if green_cx is not None and red_cx is not None:
+                mid_x = int((green_cx + red_cx) / 2)
+            else:
+                mid_x = int(width/2)
 
             # Optional: draw markers for visualization
             cv2.circle(masked_frame, (green_cx, 240), 5, (0, 255, 0), -1)
@@ -95,7 +99,7 @@ class ImageSubscriber(Node):
 
             # You can now use mid_x to adjust steering
             # For example:
-            error = mid_x - (cropped_frame.shape[1] // 2)
+            #error = mid_x - (cropped_frame.shape[1] // 2)
             # Use this error in your control logic (e.g., PID controller)
             
 
