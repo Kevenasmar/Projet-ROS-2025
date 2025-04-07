@@ -18,6 +18,24 @@ class ImageSubscriber(Node):
         
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self.br = CvBridge()
+        
+    def get_centroid_from_band(self,mask, y_start, y_end):
+            band = mask[y_start:y_end, :]
+            M = cv2.moments(band)
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                return cx
+            return None
+    
+    def get_closest_red_y(self, mask_red):
+        """
+        Returns the largest Y value (closest red pixel to the bottom).
+        """
+        coords = cv2.findNonZero(mask_red)
+        if coords is not None:
+            bottommost = max(coords, key=lambda pt: pt[0][1])
+            return bottommost[0][1]
+        return None
 
     def listener_callback(self, data):
         self.get_logger().info('Receiving video frame')
@@ -45,14 +63,14 @@ class ImageSubscriber(Node):
         masked_frame = cv2.bitwise_and(cropped_frame, cropped_frame, mask=mask)
 
         # Find centroids
-        M_green = cv2.moments(mask_green)
-        M_red = cv2.moments(mask_red)
-        green_cx = red_cx = None
+        
+        # Use only the bottom 20 pixels of cropped frame
+        band_height = 200
+        y_start = cropped_frame.shape[0] - band_height
+        y_end = cropped_frame.shape[0]
 
-        if M_green["m00"] > 0:
-            green_cx = int(M_green["m10"] / M_green["m00"])
-        if M_red["m00"] > 0:
-            red_cx = int(M_red["m10"] / M_red["m00"])
+        green_cx = self.get_centroid_from_band(mask_green, y_start, y_end)
+        red_cx = self.get_centroid_from_band(mask_red, y_start, y_end)
 
         image_center = cropped_frame.shape[1] // 2
         msg = Twist()
@@ -74,17 +92,28 @@ class ImageSubscriber(Node):
             cv2.circle(masked_frame, (mid_x, 100), 5, (255, 0, 0), -1)
 
         elif red_cx is not None:
-            # Only red → adaptive behavior
-            error = red_cx - image_center
-            msg.angular.z = Kp
-            msg.linear.x = 0.
-            #max(0.05, max_speed - K_speed_drop * abs(error))
+            # Only red visible → go straight if far, turn if close
+            closest_red_y = self.get_closest_red_y(mask_red)
+            self.get_logger().info(f"Closest red Y: {closest_red_y}")
+
+            if closest_red_y is not None and closest_red_y < cropped_frame.shape[0] - 40:
+                # Red is far away → go straight
+                msg.linear.x = 0.05
+                msg.angular.z = 0.0
+                self.get_logger().info("Red line far → going straight.")
+            else:
+                # Red is close → turn in place
+                error = red_cx - image_center
+                msg.angular.z = 0.05
+                msg.linear.x = 0.0
+                self.get_logger().info("Red line close → turning.")
+
             cv2.circle(masked_frame, (red_cx, 100), 5, (0, 0, 255), -1)
 
         elif green_cx is not None:
             # Only green → adaptive behavior
             error = green_cx - image_center
-            msg.angular.z = -Kp 
+            msg.angular.z = -0.05
             msg.linear.x = 0.
             cv2.circle(masked_frame, (green_cx, 100), 5, (0, 255, 0), -1)
 
