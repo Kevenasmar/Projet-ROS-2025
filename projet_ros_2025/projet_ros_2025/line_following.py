@@ -18,19 +18,17 @@ class ImageSubscriber(Node):
         
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self.br = CvBridge()
-        
-    def get_centroid_from_band(self,mask, y_start, y_end):
-            band = mask[y_start:y_end, :]
-            M = cv2.moments(band)
-            if M["m00"] > 0:
-                cx = int(M["m10"] / M["m00"])
-                return cx
-            return None
-    
+        self.direction = None  # Can be 'left' or 'right'
+
+    def get_centroid_from_band(self, mask, y_start, y_end):
+        band = mask[y_start:y_end, :]
+        M = cv2.moments(band)
+        if M["m00"] > 0:
+            cx = int(M["m10"] / M["m00"])
+            return cx
+        return None
+
     def get_closest_y(self, mask):
-        """
-        Returns the largest Y value (closest red pixel to the bottom).
-        """
         coords = cv2.findNonZero(mask)
         if coords is not None:
             bottommost = max(coords, key=lambda pt: pt[0][1])
@@ -62,9 +60,7 @@ class ImageSubscriber(Node):
         mask = cv2.bitwise_or(mask_green, mask_red)
         masked_frame = cv2.bitwise_and(cropped_frame, cropped_frame, mask=mask)
 
-        # Find centroids
-        
-        # Use only the bottom 20 pixels of cropped frame
+        # Band for centroid detection
         band_height = 200
         y_start = cropped_frame.shape[0] - band_height
         y_end = cropped_frame.shape[0]
@@ -76,69 +72,80 @@ class ImageSubscriber(Node):
         msg = Twist()
 
         # Constants for control
-        Kp = 0.002  # Angular gain
+        Kp = 0.002
         max_speed = 0.1
-        K_speed_drop = 0.001  # Speed penalty per pixel of error
+        K_speed_drop = 0.001
 
         if green_cx is not None and red_cx is not None:
-            # Both lines visible → standard midpoint logic
+            # Default: center between lines
             mid_x = (green_cx + red_cx) // 2
             error = mid_x - image_center
             msg.linear.x = 0.1
             msg.angular.z = -Kp * error
+            self.get_logger().info("Centered between lines.")
 
             cv2.circle(masked_frame, (green_cx, 100), 5, (0, 255, 0), -1)
             cv2.circle(masked_frame, (red_cx, 100), 5, (0, 0, 255), -1)
-            cv2.circle(masked_frame, (mid_x, 100), 5, (255, 0, 0), -1)
+            cv2.circle(masked_frame, ((green_cx + red_cx)//2, 100), 5, (255, 0, 0), -1)
 
         elif red_cx is not None:
-            # Only red visible → go straight if far, turn if close
             closest_red_y = self.get_closest_y(mask_red)
             self.get_logger().info(f"Closest red Y: {closest_red_y}")
 
             if closest_red_y is not None and closest_red_y < cropped_frame.shape[0] - 40:
-                # Red is far away → go straight
                 msg.linear.x = 0.1
                 msg.angular.z = 0.0
                 self.get_logger().info("Red line far → going straight.")
             else:
-                # Red is close → turn in place
                 error = red_cx - image_center
-                msg.angular.z = 0.6
+                msg.angular.z = 0.4
                 msg.linear.x = 0.0
                 self.get_logger().info("Red line close → turning.")
 
             cv2.circle(masked_frame, (red_cx, 100), 5, (0, 0, 255), -1)
 
         elif green_cx is not None:
-            # Only green visible → go straight if far, turn if close
             closest_green_y = self.get_closest_y(mask_green)
             self.get_logger().info(f"Closest green Y: {closest_green_y}")
 
             if closest_green_y is not None and closest_green_y < cropped_frame.shape[0] - 80:
-                # Red is far away → go straight
                 msg.linear.x = 0.1
                 msg.angular.z = 0.0
                 self.get_logger().info("Green line far → going straight.")
             else:
-                # Green is close → turn in place
                 error = green_cx - image_center
-                msg.angular.z = -0.6
+                msg.angular.z = -0.4
                 msg.linear.x = 0.
-                
+                self.get_logger().info("Green line close → turning.")
+
             cv2.circle(masked_frame, (green_cx, 100), 5, (0, 255, 0), -1)
 
         else:
-            # No lines → stop
-            msg.linear.x = 0.005
-            msg.angular.z = 0.005
-            self.get_logger().warn("No lines detected. Robot stopping.")
+            # Roundabout: follow chosen direction
+            if self.direction == 'left':
+                msg.linear.x = 0.08
+                msg.angular.z = 0.4
+                self.get_logger().info("Turning LEFT at roundabout.")
+            elif self.direction == 'right':
+                msg.linear.x = 0.08
+                msg.angular.z = -0.4
+                self.get_logger().info("Turning RIGHT at roundabout.")
+            else:
+                msg.linear.x = 0.005
+                msg.angular.z = 0.005
+                self.get_logger().warn("No lines detected. Robot stopping.")
 
-        # Publish and show
+        # Handle key input for direction selection
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('l'):
+            self.direction = 'left'
+            self.get_logger().info("Direction set to LEFT")
+        elif key == ord('r'):
+            self.direction = 'right'
+            self.get_logger().info("Direction set to RIGHT")
+
         self.publisher.publish(msg)
         cv2.imshow("camera", masked_frame)
-        cv2.waitKey(1)
-
 
 def main(args=None):
     rclpy.init(args=args)
