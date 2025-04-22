@@ -24,9 +24,13 @@ class CompressedImageSubscriber(Node):
         #     10
         # )
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.threshold_distance = 50
+        self.threshold_distance = 70
+        self.threshold_rond_point = 20
         self.vy_target = 0.85
         self.emergency_stop = False
+        self.turn_direction = 'left'  # ou 'right'
+        self.bifurcation_engaged = False  # état interne
+        self.speed = 0.05
 
     # def laser_callback(self, scan_msg):
     #     front_ranges = scan_msg.ranges[len(scan_msg.ranges)//2 - 5 : len(scan_msg.ranges)//2 + 5]
@@ -136,17 +140,77 @@ class CompressedImageSubscriber(Node):
         if self.emergency_stop:
             twist.linear.x = 0.0
             twist.angular.z = 0.0
+            
+         # Mesurer la "quantité" de rouge et vert
+        green_pixels = cv2.countNonZero(mask_green)
+        red_pixels = cv2.countNonZero(mask_red)
+        total_pixels = green_pixels + red_pixels
+
+        if total_pixels == 0:
+            return
+
+        green_ratio = green_pixels / total_pixels
+        red_ratio = red_pixels / total_pixels
+        self.get_logger().info(f"Ratio pixels verts {green_ratio}")
+        self.get_logger().info(f"Ratio pixels rouges {red_ratio}")
+        # Estimer la proximité des lignes
+        green_y = self.get_closest_y(mask_green)
+        red_y = self.get_closest_y(mask_red)
+        avg_y = min(green_y or 9999, red_y or 9999)
+
+        if green_centroid and red_centroid:
+            delta_x = abs(green_centroid[0] - red_centroid[0])
+            if delta_x > 50:
+                # Trop proche = probablement juste une ligne droite normale
+                self.get_logger().info("🔹Ratios équilibrés mais centroïdes trop proches → PAS une bifurcation")
+                self.get_logger().info(f"Delta x {delta_x}")
+                twist.linear.x = self.speed
+                twist.angular.z = 0.0
+                
+                
+                
+            elif avg_y < cropped_frame.shape[0] - self.threshold_rond_point and not self.bifurcation_engaged:
+                # Encore loin → avance doucement
+                twist.linear.x = self.speed
+                twist.angular.z = 0.0
+                self.get_logger().info("🔴BIFURCATION START")
+                self.get_logger().info(f"Delta x {delta_x}")
+                self.bifurcation_engaged = True
+
+            elif self.bifurcation_engaged:
+                # Assez proche → on tourne
+                self.get_logger().info("BIFURCATION ON")
+                twist.linear.x = 0.0
+                twist.angular.z = 0.4 if self.turn_direction == 'left' else -0.4
+                self.get_logger().info(f"Proche de la bifurcation → tourne à {self.turn_direction}")
+                if self.turn_direction == 'left':
+                    if red_vx is None and green_vx is not None:  
+                        self.bifurcation_engaged = False
+                        self.get_logger().info(f"BIFURCATION STOP")
+                if self.turn_direction == 'right': 
+                    if red_vx is not None and green_vx is None:  
+                        self.bifurcation_engaged = False
+                        self.get_logger().info(f"BIFURCATION STOP")
+
+            else:
+                # Bifurcation détectée mais pas encore assez proche → avance doucement
+                twist.linear.x = self.speed
+                twist.angular.z = 0.0
+                self.get_logger().info("Bifurcation détectée (déjà engagée) → avance")
+
 
         elif green_vx is not None and red_vx is not None:
+            # Comportement normal avec 2 lignes
             speed = 0.5 * (abs(green_vx) + abs(red_vx) + abs(green_vy) + abs(red_vy)) / 2
-            twist.linear.x = min(speed, 0.15)
+            twist.linear.x = min(speed, self.speed)
             twist.angular.z = 0.0
             self.get_logger().info("2 lignes détectées : avance proportionnelle à la tangente")
+
 
         elif red_vx is not None:
             closest_y = self.get_closest_y(mask_red)
             if closest_y is not None and closest_y < cropped_frame.shape[0] - self.threshold_distance:
-                twist.linear.x = 0.1
+                twist.linear.x = self.speed
                 twist.angular.z = 0.0
                 self.get_logger().info("Rouge loin → avance vers seuil")
             elif abs(red_vy) < self.vy_target:
@@ -154,14 +218,14 @@ class CompressedImageSubscriber(Node):
                 twist.angular.z = 0.4
                 self.get_logger().info("Rouge proche mais non alignée → tourne à gauche")
             else:
-                twist.linear.x = 0.1
+                twist.linear.x = self.speed
                 twist.angular.z = 0.0
                 self.get_logger().info("Rouge proche et alignée → avance")
 
         elif green_vx is not None:
             closest_y = self.get_closest_y(mask_green)
             if closest_y is not None and closest_y < cropped_frame.shape[0] - self.threshold_distance:
-                twist.linear.x = 0.1
+                twist.linear.x = self.speed
                 twist.angular.z = 0.0
                 self.get_logger().info("Vert loin → avance vers seuil")
             elif abs(green_vy) < self.vy_target:
@@ -169,12 +233,12 @@ class CompressedImageSubscriber(Node):
                 twist.angular.z = -0.4
                 self.get_logger().info("Vert proche mais non alignée → tourne à droite")
             else:
-                twist.linear.x = 0.1
+                twist.linear.x = self.speed
                 twist.angular.z = 0.0
                 self.get_logger().info("Vert proche et alignée → avance")
 
         else:
-            twist.linear.x = 0.1
+            twist.linear.x = self.speed
             twist.angular.z = 0.0
             self.get_logger().info("Aucune ligne détectée → avance pour en trouver")
 
