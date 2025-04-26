@@ -24,7 +24,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'line_following = projet_ros_2025.line_following:main'
+            'line_following = projet_ros_2025.line_following:main',
+            'teleop_camera = projet_ros_2025.teleop_camera:main'
         ],
     },
 )

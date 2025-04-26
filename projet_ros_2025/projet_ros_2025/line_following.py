@@ -17,26 +17,42 @@ class CompressedImageSubscriber(Node):
             self.listener_callback,
             10
         )
-        # self.scan_subscription = self.create_subscription(
-        #     LaserScan,
-        #     '/scan',
-        #     self.laser_callback,
-        #     10
-        # )
+        self.scan_subscription = self.create_subscription(
+            LaserScan,
+            '/scan',
+            self.laser_callback,
+            10
+        )
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.threshold_distance = 70
         self.vy_target = 0.85
         self.emergency_stop = False
         self.turn_direction = "left" #or "right"
+        self.waiting_for_start = False
+        
+    def kbhit():
+        ''' Returns True if keyboard character was hit, False otherwise. '''
+        dr, dw, de = select.select([sys.stdin], [], [], 0)
+        return dr != []
 
-    # def laser_callback(self, scan_msg):
-    #     front_ranges = scan_msg.ranges[len(scan_msg.ranges)//2 - 5 : len(scan_msg.ranges)//2 + 5]
-    #     front_ranges = [r for r in front_ranges if not math.isinf(r)]
-    #     if front_ranges and min(front_ranges) < 0.4:
-    #         self.emergency_stop = True
-    #         self.get_logger().warn("⚠️ Obstacle détecté : arrêt d'urgence !")
-    #     else:
-    #         self.emergency_stop = False
+    def getch():
+        ''' Returns the character if available, or None otherwise. '''
+        if kbhit():
+            return sys.stdin.read(1)
+        return None
+
+    def laser_callback(self, scan_msg):
+        np_array = np.array(scan_msg.ranges)
+        front = np.mean(np.concatenate((np_array[-10:], np_array[:10])))
+        left = np.mean(np_array[80:100])
+        back = np.mean(np_array[170:190])
+        right = np.mean(np_array[260:280])  
+        distances = [front,left,back,right]
+        if min(distances) < 0.2:
+            self.emergency_stop = True
+            self.get_logger().warn("⚠️ Obstacle détecté : arrêt d'urgence !")
+        else:
+            self.emergency_stop = False
 
     def get_centroid(self, mask):
         M = cv2.moments(mask)
@@ -89,6 +105,7 @@ class CompressedImageSubscriber(Node):
         return vx.item(), vy.item()
 
     def listener_callback(self, msg):
+        
         np_arr = np.frombuffer(msg.data, np.uint8)
         image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if image is None:
@@ -100,7 +117,7 @@ class CompressedImageSubscriber(Node):
         hsv = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2HSV)
 
         lower_green = (55, 60, 20)
-        upper_green = (110, 255, 255)
+        upper_green = (85, 255, 255)
         mask_green = cv2.inRange(hsv, lower_green, upper_green)
 
         lower_red1 = (0, 70, 70)
@@ -112,10 +129,18 @@ class CompressedImageSubscriber(Node):
         mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
 
         mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+        
+        lower_blue = (100, 150, 150)  # H, S, V
+        upper_blue = (130, 255, 255)
+        mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))  # You can adjust size
+        mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
+        mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
 
         filtered_pure = np.zeros_like(cropped_frame)
         filtered_pure[mask_green > 0] = (0, 255, 0)
         filtered_pure[mask_red > 0] = (0, 0, 255)
+        filtered_pure[mask_blue > 0] = (255, 0, 0)
 
         gray = cv2.cvtColor(filtered_pure, cv2.COLOR_BGR2GRAY)
         contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -123,23 +148,58 @@ class CompressedImageSubscriber(Node):
 
         green_centroid = self.get_centroid(mask_green)
         red_centroid = self.get_centroid(mask_red)
-
+        blue_centroid = self.get_centroid(mask_blue)
+        
         if green_centroid:
             cv2.circle(filtered_pure, green_centroid, 5, (0, 255, 0), -1)
         if red_centroid:
             cv2.circle(filtered_pure, red_centroid, 5, (0, 0, 255), -1)
+        if blue_centroid:
+            cv2.circle(filtered_pure, blue_centroid, 5, (255, 0, 0), -1)
+            
 
         green_vx, green_vy = self.get_tangent_components_and_draw(mask_green, green_centroid, (0, 255, 0), filtered_pure)
         red_vx, red_vy = self.get_tangent_components_and_draw(mask_red, red_centroid, (0, 0, 255), filtered_pure)
+        blue_vx, blue_vy = self.get_tangent_components_and_draw(mask_blue, blue_centroid, (255, 0, 0), filtered_pure)
+
 
         twist = Twist()
 
         if self.emergency_stop:
             twist.linear.x = 0.0
             twist.angular.z = 0.0
+            self.get_logger().warn("🚨 Emergency stop active: robot immobilized!")
+            self.cmd_pub.publish(twist)  # <- publish immediately
+            return  # <- VERY important: return early to stop processing
         
         green_y = self.get_closest_y(mask_green)
         red_y = self.get_closest_y(mask_red)
+        
+        if blue_centroid is not None:
+            blue_cx, blue_cy = blue_centroid
+            frame_center = cropped_frame.shape[1] / 2
+            center_threshold = 70  # tighter precision, in pixels
+
+            lateral_error = (blue_cx - frame_center) / frame_center  # normalize between [-1, 1]
+
+            if abs(lateral_error) < (center_threshold / frame_center):
+                # Blue is centered enough, STOP
+                self.get_logger().info("🔵 Blue line centered: stopping and waiting for start command")
+                self.waiting_for_start = True
+                twist = Twist()
+                twist.linear.x = 0.0
+                twist.angular.z = 0.0
+                self.cmd_pub.publish(twist)
+                return
+            else:
+                # Blue is detected but not centered, correct alignment
+                twist = Twist()
+                twist.linear.x = 0.0
+                twist.angular.z = -0.5 * lateral_error  # proportional controller to rotate
+                self.get_logger().info(f"🔵 Aligning to blue line... error: {lateral_error:.2f}")
+                self.cmd_pub.publish(twist)
+                return
+
 
         if green_vx is not None and red_vx is not None:
             if abs(green_y-red_y) < 10 : 
