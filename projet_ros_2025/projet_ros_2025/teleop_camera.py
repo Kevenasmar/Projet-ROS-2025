@@ -15,7 +15,7 @@ class MyTeleopNode(Node):
         
         self.subscription = self.create_subscription(
             CompressedImage,
-            '/image_raw/compressed',
+            '/camera/image_raw/compressed',
             self.listener_callback,
             10
         )
@@ -35,8 +35,8 @@ class MyTeleopNode(Node):
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10) #ajouter /turtle1 pour remettre commandes sur la tortue
 
         # Declare and Retrieve Parameters
-        self.declare_parameter("linear_scale", 2.0)
-        self.declare_parameter("angular_scale", 2.0)
+        self.declare_parameter("linear_scale", 0.1)
+        self.declare_parameter("angular_scale", 1.0)
 
         self.linear_scale = self.get_parameter("linear_scale").value
         self.angular_scale = self.get_parameter("angular_scale").value
@@ -92,7 +92,41 @@ class MyTeleopNode(Node):
             self.get_logger().warn("Failed to decode compressed image")
             return
         
-        cv2.imshow("Filtered Pure (rouge/vert/noir uniquement)", image)
+        height, width, _ = image.shape
+        cropped_frame = image[height // 2 + 25 :,:]
+        hsv = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2HSV)
+
+        lower_green = (40, 40, 40)
+        upper_green = (90, 255, 255)    
+        mask_green = cv2.inRange(hsv, lower_green, upper_green)
+
+        lower_red1 = (0, 50, 50)
+        upper_red1 = (10, 255, 255)
+        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+
+        lower_red2 = (170, 50, 50)
+        upper_red2 = (180, 255, 255)
+        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+
+        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+        
+        lower_blue = (100, 150, 150)  # H, S, V
+        upper_blue = (130, 255, 255)
+        mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))  # You can adjust size
+        mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
+        mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
+
+        filtered_pure = np.zeros_like(cropped_frame)
+        filtered_pure[mask_green > 0] = (0, 255, 0)
+        filtered_pure[mask_red > 0] = (0, 0, 255)
+        filtered_pure[mask_blue > 0] = (255, 0, 0)
+
+        gray = cv2.cvtColor(filtered_pure, cv2.COLOR_BGR2GRAY)
+        contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(filtered_pure, contours, -1, (255, 255, 255), 1)
+        
+        cv2.imshow("Filtered Pure (rouge/vert/noir uniquement)", filtered_pure)
         cv2.waitKey(1)
         
     # def laser_callback(self, msg):

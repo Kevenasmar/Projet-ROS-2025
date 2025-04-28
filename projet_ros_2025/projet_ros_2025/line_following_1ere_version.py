@@ -24,20 +24,19 @@ class CompressedImageSubscriber(Node):
             10
         )
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.threshold_distance = 100
-        self.threshold_distance_green = 200
+        self.threshold_distance = 1
         self.vy_target = 0.85
         self.emergency_stop = False
-        self.turn_direction = "left" #or "right"
+        self.turn_direction = "right" #or "right"
         self.waiting_for_start = False
-        
+
     def laser_callback(self, scan_msg):
         np_array = np.array(scan_msg.ranges)
         front = np.mean(np.concatenate((np_array[-10:], np_array[:10])))
         left = np.mean(np_array[80:100])
         back = np.mean(np_array[170:190])
         right = np.mean(np_array[260:280])  
-        distances = [front,left,back,right]
+        distances = [front]
         if min(distances) < 0.2:
             self.emergency_stop = True
             self.get_logger().warn("⚠️ Obstacle détecté : arrêt d'urgence !")
@@ -52,13 +51,11 @@ class CompressedImageSubscriber(Node):
             return (cx, cy)
         return None
 
-    def get_closest_point(self, mask):
+    def get_closest_y(self, mask):
         coords = cv2.findNonZero(mask)
         if coords is not None:
             bottommost = max(coords, key=lambda pt: pt[0][1])
-            x = bottommost[0][0]
-            y = bottommost[0][1]
-            return x
+            return bottommost[0][1]
         return None
 
     def get_tangent_components_and_draw(self, mask, centroid, color, frame):
@@ -157,20 +154,20 @@ class CompressedImageSubscriber(Node):
 
         twist = Twist()
 
-        # if self.emergency_stop:
-        #     twist.linear.x = 0.0
-        #     twist.angular.z = 0.0
-        #     self.get_logger().warn("🚨 Emergency stop active: robot immobilized!")
-        #     self.cmd_pub.publish(twist)  # <- publish immediately
-        #     return  # <- VERY important: return early to stop processing
+        if self.emergency_stop:
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
+            self.get_logger().warn("🚨 Emergency stop active: robot immobilized!")
+            self.cmd_pub.publish(twist)  # <- publish immediately
+            return  # <- VERY important: return early to stop processing
         
-        green_x = self.get_closest_point(mask_green)
-        red_x = self.get_closest_point(mask_red)
+        green_y = self.get_closest_y(mask_green)
+        red_y = self.get_closest_y(mask_red)
         
         if blue_centroid is not None:
             blue_cx, blue_cy = blue_centroid
             frame_center = cropped_frame.shape[1] / 2
-            center_threshold = 20  # tighter precision, in pixels
+            center_threshold = 70  # tighter precision, in pixels
 
             lateral_error = (blue_cx - frame_center) / frame_center  # normalize between [-1, 1]
 
@@ -194,8 +191,8 @@ class CompressedImageSubscriber(Node):
 
 
         if green_vx is not None and red_vx is not None:
-            if abs(green_x-red_x) < 10 : 
-                self.get_logger().info(f"Ligne rouge et verte très proche : {abs(green_x-red_x)}")
+            if abs(green_y-red_y) < 10 : 
+                self.get_logger().info(f"Ligne rouge et verte très proche : {abs(green_y-red_y)}")
                 twist.linear.x = 0.0
                 twist.angular.z = 0.4 if self.turn_direction == 'left' else -1.7
                 
@@ -206,13 +203,13 @@ class CompressedImageSubscriber(Node):
                 self.get_logger().info("2 lignes détectées : avance proportionnelle à la tangente")
 
         elif red_vx is not None:
-            if red_x is not None and red_x > cropped_frame.shape[1] - self.threshold_distance:
+            if red_y is not None and red_y < cropped_frame.shape[0] - self.threshold_distance:
                 twist.linear.x = 0.07
                 twist.angular.z = 0.0
                 self.get_logger().info("Rouge loin → avance vers seuil")
             elif abs(red_vy) < self.vy_target:
                 twist.linear.x = 0.0
-                twist.angular.z = 0.7
+                twist.angular.z = 0.4
                 self.get_logger().info("Rouge proche mais non alignée → tourne à gauche")
             else:
                 twist.linear.x = 0.07
@@ -220,13 +217,13 @@ class CompressedImageSubscriber(Node):
                 self.get_logger().info("Rouge proche et alignée → avance")
 
         elif green_vx is not None:
-            if green_x is not None and green_x < cropped_frame.shape[1] - self.threshold_distance_green:
+            if green_y is not None and green_y < cropped_frame.shape[0] - self.threshold_distance:
                 twist.linear.x = 0.07
                 twist.angular.z = 0.0
                 self.get_logger().info("Vert loin → avance vers seuil")
             elif abs(green_vy) < self.vy_target:
                 twist.linear.x = 0.0
-                twist.angular.z = -0.7
+                twist.angular.z = -0.4
                 self.get_logger().info("Vert proche mais non alignée → tourne à droite")
             else:
                 twist.linear.x = 0.07
@@ -234,7 +231,7 @@ class CompressedImageSubscriber(Node):
                 self.get_logger().info("Vert proche et alignée → avance")
 
         else:
-            twist.linear.x = 0.05
+            twist.linear.x = 0.1
             twist.angular.z = 0.0
             self.get_logger().info("Aucune ligne détectée → avance pour en trouver")
 
