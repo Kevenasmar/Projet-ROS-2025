@@ -25,7 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             'line_following = projet_ros_2025.line_following:main',
-            'teleop_camera = projet_ros_2025.teleop_camera:main'
+            'teleop_camera = projet_ros_2025.teleop_camera:main',
+            'object_avoidance = projet_ros_2025.object_avoidance:main',
         ],
     },
 )

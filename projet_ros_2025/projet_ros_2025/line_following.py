@@ -13,7 +13,7 @@ class CompressedImageSubscriber(Node):
         super().__init__('compressed_image_subscriber')
         self.subscription = self.create_subscription(
             CompressedImage,
-            '/camera/image_raw/compressed',
+            '/image_raw/compressed',
             self.listener_callback,
             10
         )
@@ -95,6 +95,17 @@ class CompressedImageSubscriber(Node):
         cv2.putText(frame, f"sin: {vy.item():.2f}", (cx + 10, cy + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
         return vx.item(), vy.item()
+    
+    def clean_mask(self, mask, kernel_size=(5, 5), min_area=200):
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cleaned_mask = np.zeros_like(mask)
+        for cnt in contours:
+            if cv2.contourArea(cnt) > min_area:
+                cv2.drawContours(cleaned_mask, [cnt], -1, 255, -1)
+        return cleaned_mask
 
     def listener_callback(self, msg):
         
@@ -128,6 +139,10 @@ class CompressedImageSubscriber(Node):
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))  # You can adjust size
         mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
         mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
+        
+        mask_red = self.clean_mask(mask_red)
+        mask_green = self.clean_mask(mask_green)
+        mask_blue = self.clean_mask(mask_blue)
 
         filtered_pure = np.zeros_like(cropped_frame)
         filtered_pure[mask_green > 0] = (0, 255, 0)
@@ -164,33 +179,41 @@ class CompressedImageSubscriber(Node):
         #     self.cmd_pub.publish(twist)  # <- publish immediately
         #     return  # <- VERY important: return early to stop processing
         
-        green_x, green_y = self.get_closest_point(mask_green)
-        red_x, red_y = self.get_closest_point(mask_red)
+        green_point = self.get_closest_point(mask_green)
+        red_point = self.get_closest_point(mask_red)
+
+        if green_point is not None:
+            green_x, green_y = green_point
+            # do something with green_x, green_y
+
+        if red_point is not None:
+            red_x, red_y = red_point
+            # do something with red_x, red_y
         
-        if blue_centroid is not None:
-            blue_cx, blue_cy = blue_centroid
-            frame_center = cropped_frame.shape[1] / 2
-            center_threshold = 20  # tighter precision, in pixels
+        # if blue_centroid is not None:
+        #     blue_cx, blue_cy = blue_centroid
+        #     frame_center = cropped_frame.shape[1] / 2
+        #     center_threshold = 20  # tighter precision, in pixels
 
-            lateral_error = (blue_cx - frame_center) / frame_center  # normalize between [-1, 1]
+        #     lateral_error = (blue_cx - frame_center) / frame_center  # normalize between [-1, 1]
 
-            if abs(lateral_error) < (center_threshold / frame_center):
-                # Blue is centered enough, STOP
-                self.get_logger().info("🔵 Blue line centered: stopping and waiting for start command")
-                self.waiting_for_start = True
-                twist = Twist()
-                twist.linear.x = 0.0
-                twist.angular.z = 0.0
-                self.cmd_pub.publish(twist)
-                return
-            else:
-                # Blue is detected but not centered, correct alignment
-                twist = Twist()
-                twist.linear.x = 0.0
-                twist.angular.z = -0.5 * lateral_error  # proportional controller to rotate
-                self.get_logger().info(f"🔵 Aligning to blue line... error: {lateral_error:.2f}")
-                self.cmd_pub.publish(twist)
-                return
+        #     if abs(lateral_error) < (center_threshold / frame_center):
+        #         # Blue is centered enough, STOP
+        #         self.get_logger().info("🔵 Blue line centered: stopping and waiting for start command")
+        #         self.waiting_for_start = True
+        #         twist = Twist()
+        #         twist.linear.x = 0.0
+        #         twist.angular.z = 0.0
+        #         self.cmd_pub.publish(twist)
+        #         return
+        #     else:
+        #         # Blue is detected but not centered, correct alignment
+        #         twist = Twist()
+        #         twist.linear.x = 0.0
+        #         twist.angular.z = -0.5 * lateral_error  # proportional controller to rotate
+        #         self.get_logger().info(f"🔵 Aligning to blue line... error: {lateral_error:.2f}")
+        #         self.cmd_pub.publish(twist)
+        #         return
 
 
         if green_vx is not None and red_vx is not None:

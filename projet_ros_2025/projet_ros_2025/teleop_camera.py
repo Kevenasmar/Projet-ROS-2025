@@ -35,7 +35,7 @@ class MyTeleopNode(Node):
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10) #ajouter /turtle1 pour remettre commandes sur la tortue
 
         # Declare and Retrieve Parameters
-        self.declare_parameter("linear_scale", 0.1)
+        self.declare_parameter("linear_scale", 0.5)
         self.declare_parameter("angular_scale", 1.0)
 
         self.linear_scale = self.get_parameter("linear_scale").value
