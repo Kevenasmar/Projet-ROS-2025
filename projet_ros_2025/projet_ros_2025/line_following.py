@@ -58,7 +58,7 @@ class CompressedImageSubscriber(Node):
             bottommost = max(coords, key=lambda pt: pt[0][1])
             x = bottommost[0][0]
             y = bottommost[0][1]
-            return x
+            return x,y
         return None
 
     def get_tangent_components_and_draw(self, mask, centroid, color, frame):
@@ -164,8 +164,8 @@ class CompressedImageSubscriber(Node):
         #     self.cmd_pub.publish(twist)  # <- publish immediately
         #     return  # <- VERY important: return early to stop processing
         
-        green_x = self.get_closest_point(mask_green)
-        red_x = self.get_closest_point(mask_red)
+        green_x, green_y = self.get_closest_point(mask_green)
+        red_x, red_y = self.get_closest_point(mask_red)
         
         if blue_centroid is not None:
             blue_cx, blue_cy = blue_centroid
@@ -206,7 +206,7 @@ class CompressedImageSubscriber(Node):
                 self.get_logger().info("2 lignes détectées : avance proportionnelle à la tangente")
 
         elif red_vx is not None:
-            if red_x is not None and red_x > cropped_frame.shape[1] - self.threshold_distance:
+            if (red_x and red_y) is not None and red_x > cropped_frame.shape[1] - self.threshold_distance and red_y < cropped_frame.shape[0]//2:
                 twist.linear.x = 0.07
                 twist.angular.z = 0.0
                 self.get_logger().info("Rouge loin → avance vers seuil")
@@ -220,7 +220,7 @@ class CompressedImageSubscriber(Node):
                 self.get_logger().info("Rouge proche et alignée → avance")
 
         elif green_vx is not None:
-            if green_x is not None and green_x < cropped_frame.shape[1] - self.threshold_distance_green:
+            if (green_x and green_y) is not None and green_x < cropped_frame.shape[1] - self.threshold_distance_green and green_y < cropped_frame.shape[0]//2:
                 twist.linear.x = 0.07
                 twist.angular.z = 0.0
                 self.get_logger().info("Vert loin → avance vers seuil")
