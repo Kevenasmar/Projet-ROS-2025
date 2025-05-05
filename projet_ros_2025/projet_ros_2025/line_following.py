@@ -13,7 +13,7 @@ class CompressedImageSubscriber(Node):
         super().__init__('compressed_image_subscriber')
         self.subscription = self.create_subscription(
             CompressedImage,
-            '/image_raw/compressed',
+            'camera/image_raw/compressed',
             self.listener_callback,
             10
         )
@@ -25,11 +25,12 @@ class CompressedImageSubscriber(Node):
         )
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.threshold_distance = 100
-        self.threshold_distance_green = 200
+        self.threshold_distance_green = 500
         self.vy_target = 0.85
         self.emergency_stop = False
         self.turn_direction = "left" #or "right"
         self.waiting_for_start = False
+        self.last_image_time = self.get_clock().now()
         
     def laser_callback(self, scan_msg):
         np_array = np.array(scan_msg.ranges)
@@ -37,7 +38,7 @@ class CompressedImageSubscriber(Node):
         left = np.mean(np_array[80:100])
         back = np.mean(np_array[170:190])
         right = np.mean(np_array[260:280])  
-        distances = [front,left,back,right]
+        distances = [front]
         if min(distances) < 0.2:
             self.emergency_stop = True
             self.get_logger().warn("⚠️ Obstacle détecté : arrêt d'urgence !")
@@ -96,7 +97,7 @@ class CompressedImageSubscriber(Node):
 
         return vx.item(), vy.item()
     
-    def clean_mask(self, mask, kernel_size=(5, 5), min_area=200):
+    def clean_mask(self, mask, kernel_size=(3, 3), min_area=200):
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -108,7 +109,11 @@ class CompressedImageSubscriber(Node):
         return cleaned_mask
 
     def listener_callback(self, msg):
-        
+        now = self.get_clock().now()
+        if (now - self.last_image_time).nanoseconds < 1e8:  # 10 FPS throttle
+            return
+        self.last_image_time = now
+
         np_arr = np.frombuffer(msg.data, np.uint8)
         image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if image is None:
@@ -116,68 +121,36 @@ class CompressedImageSubscriber(Node):
             return
 
         height, width, _ = image.shape
-        cropped_frame = image[height // 2 + OFFSET_FRAME :,:]
-        hsv = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2HSV)
+        cropped = image[height // 2 + 25:, :]
+        hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
 
-        lower_green = (40, 40, 40)
-        upper_green = (90, 255, 255)    
-        mask_green = cv2.inRange(hsv, lower_green, upper_green)
+        # Masks
+        mask_green = self.clean_mask(cv2.inRange(hsv, (40, 40, 40), (90, 255, 255)))
+        mask_red = self.clean_mask(cv2.bitwise_or(
+            cv2.inRange(hsv, (0, 50, 50), (10, 255, 255)),
+            cv2.inRange(hsv, (170, 50, 50), (180, 255, 255))
+        ))
 
-        lower_red1 = (0, 50, 50)
-        upper_red1 = (10, 255, 255)
-        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        # Visualization
+        display = np.zeros_like(cropped)
+        display[mask_green > 0] = (0, 255, 0)
+        display[mask_red > 0] = (0, 0, 255)
 
-        lower_red2 = (170, 50, 50)
-        upper_red2 = (180, 255, 255)
-        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
-
-        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+        # Centroids
+        green_c = self.get_centroid(mask_green)
+        red_c = self.get_centroid(mask_red)
         
-        lower_blue = (100, 150, 150)  # H, S, V
-        upper_blue = (130, 255, 255)
-        mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))  # You can adjust size
-        mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel)
-        mask_blue = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, kernel)
-        
-        mask_red = self.clean_mask(mask_red)
-        mask_green = self.clean_mask(mask_green)
-        mask_blue = self.clean_mask(mask_blue)
-
-        filtered_pure = np.zeros_like(cropped_frame)
-        filtered_pure[mask_green > 0] = (0, 255, 0)
-        filtered_pure[mask_red > 0] = (0, 0, 255)
-        filtered_pure[mask_blue > 0] = (255, 0, 0)
-
-        gray = cv2.cvtColor(filtered_pure, cv2.COLOR_BGR2GRAY)
-        contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(filtered_pure, contours, -1, (255, 255, 255), 1)
-
-        green_centroid = self.get_centroid(mask_green)
-        red_centroid = self.get_centroid(mask_red)
-        blue_centroid = self.get_centroid(mask_blue)
-        
-        if green_centroid:
-            cv2.circle(filtered_pure, green_centroid, 5, (0, 255, 0), -1)
-        if red_centroid:
-            cv2.circle(filtered_pure, red_centroid, 5, (0, 0, 255), -1)
-        if blue_centroid:
-            cv2.circle(filtered_pure, blue_centroid, 5, (255, 0, 0), -1)
+        if green_c:
+            cv2.circle(display, green_c, 5, (0, 255, 0), -1)
+        if red_c:
+            cv2.circle(display, red_c, 5, (0, 0, 255), -1)
             
 
-        green_vx, green_vy = self.get_tangent_components_and_draw(mask_green, green_centroid, (0, 255, 0), filtered_pure)
-        red_vx, red_vy = self.get_tangent_components_and_draw(mask_red, red_centroid, (0, 0, 255), filtered_pure)
-        blue_vx, blue_vy = self.get_tangent_components_and_draw(mask_blue, blue_centroid, (255, 0, 0), filtered_pure)
-
+        green_vx, green_vy = self.get_tangent_components_and_draw(mask_green, green_c, (0, 255, 0), display)
+        red_vx, red_vy = self.get_tangent_components_and_draw(mask_red, red_c, (0, 0, 255), display)
 
         twist = Twist()
-
-        # if self.emergency_stop:
-        #     twist.linear.x = 0.0
-        #     twist.angular.z = 0.0
-        #     self.get_logger().warn("🚨 Emergency stop active: robot immobilized!")
-        #     self.cmd_pub.publish(twist)  # <- publish immediately
-        #     return  # <- VERY important: return early to stop processing
+        center_x = cropped.shape[1] // 2
         
         green_point = self.get_closest_point(mask_green)
         red_point = self.get_closest_point(mask_red)
@@ -189,32 +162,12 @@ class CompressedImageSubscriber(Node):
         if red_point is not None:
             red_x, red_y = red_point
             # do something with red_x, red_y
-        
-        # if blue_centroid is not None:
-        #     blue_cx, blue_cy = blue_centroid
-        #     frame_center = cropped_frame.shape[1] / 2
-        #     center_threshold = 20  # tighter precision, in pixels
-
-        #     lateral_error = (blue_cx - frame_center) / frame_center  # normalize between [-1, 1]
-
-        #     if abs(lateral_error) < (center_threshold / frame_center):
-        #         # Blue is centered enough, STOP
-        #         self.get_logger().info("🔵 Blue line centered: stopping and waiting for start command")
-        #         self.waiting_for_start = True
-        #         twist = Twist()
-        #         twist.linear.x = 0.0
-        #         twist.angular.z = 0.0
-        #         self.cmd_pub.publish(twist)
-        #         return
-        #     else:
-        #         # Blue is detected but not centered, correct alignment
-        #         twist = Twist()
-        #         twist.linear.x = 0.0
-        #         twist.angular.z = -0.5 * lateral_error  # proportional controller to rotate
-        #         self.get_logger().info(f"🔵 Aligning to blue line... error: {lateral_error:.2f}")
-        #         self.cmd_pub.publish(twist)
-        #         return
-
+            
+        if self.emergency_stop:
+            self.get_logger().warn("⚠️ Emergency stop active – skipping movement commands.")
+            stop_msg = Twist()
+            self.cmd_pub.publish(stop_msg)
+            return
 
         if green_vx is not None and red_vx is not None:
             if abs(green_x-red_x) < 10 : 
@@ -229,7 +182,7 @@ class CompressedImageSubscriber(Node):
                 self.get_logger().info("2 lignes détectées : avance proportionnelle à la tangente")
 
         elif red_vx is not None:
-            if (red_x and red_y) is not None and red_x > cropped_frame.shape[1] - self.threshold_distance and red_y < cropped_frame.shape[0]//2:
+            if (red_x and red_y) is not None and red_x > display.shape[1] - self.threshold_distance:
                 twist.linear.x = 0.07
                 twist.angular.z = 0.0
                 self.get_logger().info("Rouge loin → avance vers seuil")
@@ -243,7 +196,7 @@ class CompressedImageSubscriber(Node):
                 self.get_logger().info("Rouge proche et alignée → avance")
 
         elif green_vx is not None:
-            if (green_x and green_y) is not None and green_x < cropped_frame.shape[1] - self.threshold_distance_green and green_y < cropped_frame.shape[0]//2:
+            if (green_x and green_y) is not None and green_c[0] < display.shape[1] - self.threshold_distance_green:
                 twist.linear.x = 0.07
                 twist.angular.z = 0.0
                 self.get_logger().info("Vert loin → avance vers seuil")
@@ -260,10 +213,15 @@ class CompressedImageSubscriber(Node):
             twist.linear.x = 0.05
             twist.angular.z = 0.0
             self.get_logger().info("Aucune ligne détectée → avance pour en trouver")
+            
+        if not self.emergency_stop:
+            self.cmd_pub.publish(twist)
+        else:
+            stop_msg = Twist()
+            self.cmd_pub.publish(stop_msg)
 
-        self.cmd_pub.publish(twist)
-
-        cv2.imshow("Filtered Pure (rouge/vert/noir uniquement)", filtered_pure)
+        # Show what the robot sees
+        cv2.imshow("Line View", display)
         cv2.waitKey(1)
 
 def main(args=None):

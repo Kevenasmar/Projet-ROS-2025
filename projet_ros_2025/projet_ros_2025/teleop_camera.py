@@ -13,12 +13,12 @@ class MyTeleopNode(Node):
     def __init__(self):
         super().__init__('turtlebot_teleop', allow_undeclared_parameters=False, automatically_declare_parameters_from_overrides=True)
         
-        self.subscription = self.create_subscription(
-            CompressedImage,
-            '/camera/image_raw/compressed',
-            self.listener_callback,
-            10
-        )
+        # self.subscription = self.create_subscription(
+        #     CompressedImage,
+        #     'camera/image_raw/compressed',
+        #     self.listener_callback,
+        #     10
+        # )
         
         # self.subscription = self.create_subscription(
         #     LaserScan,
@@ -27,7 +27,7 @@ class MyTeleopNode(Node):
         #     10
         # )
         
-        self.subscription  # prevent unused variable warning
+        #self.subscription  # prevent unused variable warning
         
         # Define the key mappings
         self.keycode = {'\x1b[A': 'up', '\x1b[B': 'down',
@@ -35,7 +35,7 @@ class MyTeleopNode(Node):
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10) #ajouter /turtle1 pour remettre commandes sur la tortue
 
         # Declare and Retrieve Parameters
-        self.declare_parameter("linear_scale", 0.5)
+        self.declare_parameter("linear_scale", 0.1)
         self.declare_parameter("angular_scale", 1.0)
 
         self.linear_scale = self.get_parameter("linear_scale").value
@@ -126,8 +126,8 @@ class MyTeleopNode(Node):
         contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(filtered_pure, contours, -1, (255, 255, 255), 1)
         
-        cv2.imshow("Filtered Pure (rouge/vert/noir uniquement)", filtered_pure)
-        cv2.waitKey(1)
+        #cv2.imshow("Filtered Pure (rouge/vert/noir uniquement)", filtered_pure)
+        #cv2.waitKey(1)
         
     # def laser_callback(self, msg):
     #     np_array = np.array(msg.ranges)
