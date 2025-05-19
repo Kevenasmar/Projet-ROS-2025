@@ -1,240 +1,141 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage, LaserScan
+from sensor_msgs.msg import Image, LaserScan
 from geometry_msgs.msg import Twist
-import numpy as np
+from cv_bridge import CvBridge
 import cv2
-import math
+import numpy as np
+from sensor_msgs.msg import CompressedImage
 
-OFFSET_FRAME = 25
-
-class CompressedImageSubscriber(Node):
+class LineFollower(Node):
     def __init__(self):
-        super().__init__('compressed_image_subscriber')
+        super().__init__('line_follower')
+
+        self.declare_parameter('roundabout_direction', 'right') 
+        self.roundabout_direction = self.get_parameter('roundabout_direction').get_parameter_value().string_value
+
+        self.bridge = CvBridge()
+        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.subscription = self.create_subscription(
             CompressedImage,
             'camera/image_raw/compressed',
-            self.listener_callback,
+            self.image_callback,
             10
         )
-        self.scan_subscription = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.laser_callback,
-            10
-        )
-        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.threshold_distance = 100
-        self.threshold_distance_green = 500
-        self.vy_target = 0.85
-        self.emergency_stop = False
-        self.turn_direction = "left" #or "right"
-        self.waiting_for_start = False
-        self.last_image_time = self.get_clock().now()
-        
+        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.laser_callback, 10)
+
+        self.blue_handled = False
+        self.emergency_stop = False  # Flag d'arrêt d'urgence
+        self.get_logger().info("Node démarré. Direction du rond-point: " + self.roundabout_direction)
+    
     def laser_callback(self, scan_msg):
         np_array = np.array(scan_msg.ranges)
         front = np.mean(np.concatenate((np_array[-10:], np_array[:10])))
         left = np.mean(np_array[80:100])
         back = np.mean(np_array[170:190])
-        right = np.mean(np_array[260:280])  
-        distances = [front]
-        if min(distances) < 0.2:
+        right = np.mean(np_array[260:280])
+        distances = [front, left, back, right]
+        if min(distances) < 0.3:
             self.emergency_stop = True
             self.get_logger().warn("⚠️ Obstacle détecté : arrêt d'urgence !")
         else:
             self.emergency_stop = False
-
-    def get_centroid(self, mask):
-        M = cv2.moments(mask)
-        if M["m00"] > 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            return (cx, cy)
-        return None
-
-    def get_closest_point(self, mask):
-        coords = cv2.findNonZero(mask)
-        if coords is not None:
-            bottommost = max(coords, key=lambda pt: pt[0][1])
-            x = bottommost[0][0]
-            y = bottommost[0][1]
-            return x,y
-        return None
-
-    def get_tangent_components_and_draw(self, mask, centroid, color, frame):
-        if centroid is None:
-            return None, None
-
-        cx, cy = centroid
-        coords = np.column_stack(np.where(mask > 0))
-        if len(coords) < 10:
-            return None, None
-
-        distances = np.linalg.norm(coords - np.array([cy, cx]), axis=1)
-        close_points = coords[distances < 20]
-        if len(close_points) < 2:
-            return None, None
-
-        points_xy = np.array([[x, y] for y, x in close_points])
-        [vx, vy, _, _] = cv2.fitLine(points_xy, cv2.DIST_L2, 0, 0.01, 0.01)
-
-        if vy > 0:
-            vx = -vx
-            vy = -vy
-
-        angle_rad = math.atan2(vy, vx)
-        angle_deg = np.degrees(angle_rad) % 180
-
-        length = 50
-        x1 = int(cx + length * vx)
-        y1 = int(cy + length * vy)
-        cv2.line(frame, (cx, cy), (x1, y1), color, 2)
-
-        cv2.putText(frame, f"{angle_deg:.1f} deg", (cx + 10, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        cv2.putText(frame, f"cos: {vx.item():.2f}", (cx + 10, cy + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
-        cv2.putText(frame, f"sin: {vy.item():.2f}", (cx + 10, cy + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-
-        return vx.item(), vy.item()
-    
-    def clean_mask(self, mask, kernel_size=(3, 3), min_area=200):
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cleaned_mask = np.zeros_like(mask)
-        for cnt in contours:
-            if cv2.contourArea(cnt) > min_area:
-                cv2.drawContours(cleaned_mask, [cnt], -1, 255, -1)
-        return cleaned_mask
-
-    def listener_callback(self, msg):
-        now = self.get_clock().now()
-        if (now - self.last_image_time).nanoseconds < 1e8:  # 10 FPS throttle
-            return
-        self.last_image_time = now
-
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        if image is None:
-            self.get_logger().warn("Failed to decode compressed image")
-            return
-
-        height, width, _ = image.shape
-        cropped = image[height // 2 + 25:, :]
-        hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
-
-        # Masks
-        mask_green = self.clean_mask(cv2.inRange(hsv, (40, 40, 40), (90, 255, 255)))
-        mask_red = self.clean_mask(cv2.bitwise_or(
-            cv2.inRange(hsv, (0, 50, 50), (10, 255, 255)),
-            cv2.inRange(hsv, (170, 50, 50), (180, 255, 255))
-        ))
-
-        # Visualization
-        display = np.zeros_like(cropped)
-        display[mask_green > 0] = (0, 255, 0)
-        display[mask_red > 0] = (0, 0, 255)
-
-        # Centroids
-        green_c = self.get_centroid(mask_green)
-        red_c = self.get_centroid(mask_red)
         
-        if green_c:
-            cv2.circle(display, green_c, 5, (0, 255, 0), -1)
-        if red_c:
-            cv2.circle(display, red_c, 5, (0, 0, 255), -1)
-            
+    def image_callback(self, msg):
 
-        green_vx, green_vy = self.get_tangent_components_and_draw(mask_green, green_c, (0, 255, 0), display)
-        red_vx, red_vy = self.get_tangent_components_and_draw(mask_red, red_c, (0, 0, 255), display)
+        # Convertir les données compressées en tableau numpy
+        np_arr = np.frombuffer(msg.data, np.uint8)
+        # Décoder l'image
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        height, width, _ = frame.shape
+        roi = hsv[int(height * 0.6):, :]
 
         twist = Twist()
-        center_x = cropped.shape[1] // 2
         
-        green_point = self.get_closest_point(mask_green)
-        red_point = self.get_closest_point(mask_red)
+        # Détection du bleu
+        mask_blue = cv2.inRange(roi, (85, 50, 50), (130, 255, 255))
+        M_blue = cv2.moments(mask_blue)
+        blue_area = M_blue['m00']
 
-        if green_point is not None:
-            green_x, green_y = green_point
-            # do something with green_x, green_y
+        # Détection du rouge
+        mask_red1 = cv2.inRange(roi, (0, 70, 50), (10, 255, 255))
+        mask_red2 = cv2.inRange(roi, (160, 70, 50), (180, 255, 255))
+        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
 
-        if red_point is not None:
-            red_x, red_y = red_point
-            # do something with red_x, red_y
-            
-        if self.emergency_stop:
-            self.get_logger().warn("⚠️ Emergency stop active – skipping movement commands.")
-            stop_msg = Twist()
-            self.cmd_pub.publish(stop_msg)
-            return
+        # Détection du vert
+        mask_green = cv2.inRange(roi, (30, 40, 40), (100, 255, 255))
 
-        if green_vx is not None and red_vx is not None:
-            if abs(green_x-red_x) < 10 : 
-                self.get_logger().info(f"Ligne rouge et verte très proche : {abs(green_x-red_x)}")
-                twist.linear.x = 0.0
-                twist.angular.z = 0.4 if self.turn_direction == 'left' else -1.7
-                
+        M_red = cv2.moments(mask_red)
+        cx_red = int(M_red['m10'] / M_red['m00']) if M_red['m00'] > 0 else None
+
+        M_green = cv2.moments(mask_green)
+        cx_green = int(M_green['m10'] / M_green['m00']) if M_green['m00'] > 0 else None
+
+        if cx_red is not None and cx_green is not None:
+            if cx_green < cx_red:
+                cx = int((cx_red + cx_green) / 2)
+                err = cx - (width // 2)
+                twist.linear.x = 0.12
+                twist.angular.z = -float(err) / 200.0
             else:
-                speed = 0.5 * (abs(green_vx) + abs(red_vx) + abs(green_vy) + abs(red_vy)) / 2
-                twist.linear.x = min(speed, 0.07)
-                twist.angular.z = 0.0
-                self.get_logger().info("2 lignes détectées : avance proportionnelle à la tangente")
-
-        elif red_vx is not None:
-            if (red_x and red_y) is not None and red_x > display.shape[1] - self.threshold_distance:
-                twist.linear.x = 0.07
-                twist.angular.z = 0.0
-                self.get_logger().info("Rouge loin → avance vers seuil")
-            elif abs(red_vy) < self.vy_target:
-                twist.linear.x = 0.0
-                twist.angular.z = 0.7
-                self.get_logger().info("Rouge proche mais non alignée → tourne à gauche")
-            else:
-                twist.linear.x = 0.07
-                twist.angular.z = 0.0
-                self.get_logger().info("Rouge proche et alignée → avance")
-
-        elif green_vx is not None:
-            if (green_x and green_y) is not None and green_c[0] < display.shape[1] - self.threshold_distance_green:
-                twist.linear.x = 0.07
-                twist.angular.z = 0.0
-                self.get_logger().info("Vert loin → avance vers seuil")
-            elif abs(green_vy) < self.vy_target:
-                twist.linear.x = 0.0
-                twist.angular.z = -0.7
-                self.get_logger().info("Vert proche mais non alignée → tourne à droite")
-            else:
-                twist.linear.x = 0.07
-                twist.angular.z = 0.0
-                self.get_logger().info("Vert proche et alignée → avance")
-
+                self.get_logger().warn("Lignes inversées (vert à droite de rouge)")
+                twist.angular.z = 0.2 if self.roundabout_direction == "left" else -0.2
+        elif cx_red is not None and cx_red < 550:
+            self.get_logger().warn("Seulement la ligne rouge détectée – tournant à gauche")
+            twist.linear.x = 0.06
+            twist.angular.z = 0.50
+        elif cx_green is not None and cx_green < 550:
+            self.get_logger().warn("Seulement la ligne verte détectée – tournant à droite")
+            twist.linear.x = 0.06
+            twist.angular.z = -0.50
         else:
-            twist.linear.x = 0.05
+            self.get_logger().warn("Aucune ligne détectée – continue tout droit doucement")
+            twist.linear.x = 0.06
             twist.angular.z = 0.0
-            self.get_logger().info("Aucune ligne détectée → avance pour en trouver")
-            
+
         if not self.emergency_stop:
             self.cmd_pub.publish(twist)
         else:
             stop_msg = Twist()
             self.cmd_pub.publish(stop_msg)
 
-        # Show what the robot sees
-        cv2.imshow("Line View", display)
-        cv2.waitKey(1)
+        if blue_area > 2000000:
+            left_half = mask_blue[:, :width // 2]
+            right_half = mask_blue[:, width // 2:]
+
+            left_area = cv2.moments(left_half)['m00']
+            right_area = cv2.moments(right_half)['m00']
+
+            if abs(left_area - right_area) < 500000:
+                twist.linear.x = 0.0
+                twist.angular.z = 0.0
+                self.cmd_pub.publish(twist)
+                self.blue_handled = True
+                self.get_logger().info("Alignement réussi – arrêt du robot et fin du programme.")
+                rclpy.shutdown()
+                return
+            elif left_area > right_area:
+                twist.linear.x = 0.0
+                twist.angular.z = 0.45
+            else:
+                twist.linear.x = 0.0
+                twist.angular.z = -0.45
+
+            self.cmd_pub.publish(twist)
+            return
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = CompressedImageSubscriber()
+    node = LineFollower()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    finally:
+    if rclpy.ok():
         node.destroy_node()
         rclpy.shutdown()
-        cv2.destroyAllWindows()
-
-if __name__ == '__main__':
-    main()
+    cv2.destroyAllWindows() 

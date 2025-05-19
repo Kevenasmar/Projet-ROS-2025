@@ -27,6 +27,9 @@ setup(
             'line_following = projet_ros_2025.line_following:main',
             'teleop_camera = projet_ros_2025.teleop_camera:main',
             'object_avoidance = projet_ros_2025.object_avoidance:main',
+            'corridor = projet_ros_2025.corridor:main',
+            'foot = projet_ros_2025.Football:main',
+            'vision = projet_ros_2025.vision:main'
         ],
     },
 )

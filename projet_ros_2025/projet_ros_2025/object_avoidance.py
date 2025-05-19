@@ -22,10 +22,10 @@ class LineFollowerAvoider(Node):
         self.timer = self.create_timer(0.1, self.control_loop)  # 10 Hz
 
         self.obstacle_threshold = 0.25
-        self.threshold_distance = 25
+        self.threshold_distance = 100
         self.obstacle_right = False
         self.obstacle_left = False
-        self.threshold_distance_green = 330
+        self.threshold_distance_green = 300
         self.vy_target = 0.7
         self.turn_direction = "left" #or "right"
         self.waiting_for_start = False
@@ -35,8 +35,8 @@ class LineFollowerAvoider(Node):
     def lidar_callback(self, msg):
         ranges = np.array(msg.ranges)
         valid_ranges = ranges[np.isfinite(ranges) & (ranges > 0.0)]
-        front_left = valid_ranges[:15]
-        front_right = valid_ranges[-15:]
+        front_left = valid_ranges[:20]
+        front_right = valid_ranges[-20:]
         self.get_logger().info(f"Distance lidar min front left: {np.min(front_left)}")
         self.get_logger().info(f"Distance lidar min front right: {np.min(front_right)}")
         self.obstacle_right = np.any(front_right < self.obstacle_threshold)
@@ -124,8 +124,8 @@ class LineFollowerAvoider(Node):
         # Masks
         mask_green = self.clean_mask(cv2.inRange(hsv, (40, 40, 40), (90, 255, 255)))
         mask_red = self.clean_mask(cv2.bitwise_or(
-            cv2.inRange(hsv, (0, 50, 50), (10, 255, 255)),
-            cv2.inRange(hsv, (170, 50, 50), (180, 255, 255))
+            cv2.inRange(hsv, (0, 100, 100), (10, 255, 255)),
+            cv2.inRange(hsv, (170, 100, 100), (180, 255, 255))
         ))
 
         # Visualization
@@ -173,35 +173,35 @@ class LineFollowerAvoider(Node):
                 self.get_logger().info("2 lignes détectées : avance proportionnelle à la tangente")
 
         elif red_vx is not None:
-            if (red_x and red_y) is not None and red_c[0] > display.shape[1] - self.threshold_distance:
+            if (red_x and red_y) is not None and red_x > display.shape[1] - self.threshold_distance:
                 twist.linear.x = 0.03
                 twist.angular.z = 0.0
                 self.get_logger().info("Rouge loin → avance vers seuil")
             if red_x < display.shape[1] - self.threshold_distance:
                 twist.linear.x = 0.0
-                twist.angular.z = 0.3
+                twist.angular.z = 0.5
                 self.get_logger().info("Rouge proche mais non alignée → tourne à gauche")
             else:
-                twist.linear.x = 0.03
+                twist.linear.x = 0.05
                 twist.angular.z = 0.0
                 self.get_logger().info("Rouge proche et alignée → avance")
 
         elif green_vx is not None:
-            if (green_x and green_y) is not None and green_c[0] < display.shape[1] - self.threshold_distance_green:
+            if (green_x and green_y) is not None and green_x < display.shape[1] - self.threshold_distance_green:
                 twist.linear.x = 0.03
                 twist.angular.z = 0.0
                 self.get_logger().info("Vert loin → avance vers seuil")
-            elif green_c[0] > display.shape[1] - self.threshold_distance_green:
+            elif green_x > display.shape[1] - self.threshold_distance_green:
                 twist.linear.x = 0.0
                 twist.angular.z = -0.3
                 self.get_logger().info("Vert proche mais non alignée → tourne à droite")
             else:
-                twist.linear.x = 0.03
+                twist.linear.x = 0.05
                 twist.angular.z = 0.0
                 self.get_logger().info("Vert proche et alignée → avance")
 
         else:
-            twist.linear.x = 0.025
+            twist.linear.x = 0.05
             twist.angular.z = 0.0
             #self.get_logger().info("Aucune ligne détectée → avance pour en trouver")
         
